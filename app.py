@@ -165,9 +165,9 @@ def main():
     st.sidebar.subheader("🔍 Filtering Options")
     strict_filtering = st.sidebar.toggle("Strict SFW Filtering", value=True, help="More restrictive content filtering")
     min_rating = st.sidebar.slider("Minimum Rating", 0, 100, 60, 5, help="Minimum VNDB rating (0-100)")
-    min_votes = st.sidebar.slider("Minimum Votes", 10, 500, 100, 10, help="Minimum number of user votes")
-    max_id = st.sidebar.slider("Search Range (Max ID)", 500, 5000, 1500, 100, help="Higher = more VNs but slower")
-    max_attempts = st.sidebar.slider("Max Attempts", 10, 200, 50, 10, help="How hard to try finding a VN")
+    min_votes = st.sidebar.slider("Minimum Votes", 10, 5000, 100, 10, help="Minimum number of user votes")
+    max_id = st.sidebar.slider("Search Range (Max ID)", 10, 10000, 1500, 100, help="Higher = more VNs but slower")
+    max_attempts = st.sidebar.slider("Max Attempts", 10, 1000, 50, 10, help="How hard to try finding a VN")
     
     # Main tabs
     tab1, tab2, tab3, tab4 = st.tabs(["🎲 Random VN", "🔢 Multiple VNs", "🔍 Search", "📊 Statistics"])
