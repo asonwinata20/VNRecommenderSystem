@@ -142,13 +142,34 @@ async def fetch_multiple_vns_async(count, **kwargs):
     """Async wrapper for fetching multiple VNs"""
     return await st.session_state.fetcher.fetch_multiple_vns(count=count, **kwargs)
 
-async def search_vns_async(title, max_results, min_votes):
-    """Async wrapper for searching VNs"""
-    return await st.session_state.fetcher.search_vns_by_title(
-        title=title,
-        max_results=max_results,
-        min_votes=min_votes
-    )
+def search_vns_sync(title, max_results, min_votes):
+    """Synchronous wrapper for searching VNs - fixes async issues in Streamlit"""
+    try:
+        # Try to run async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(
+            st.session_state.fetcher.search_vns_by_title(
+                title=title,
+                max_results=max_results,
+                min_votes=min_votes
+            )
+        )
+        loop.close()
+        return result
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        # Fallback: try direct synchronous search if available
+        try:
+            if hasattr(st.session_state.fetcher, 'search_vns_by_title_sync'):
+                return st.session_state.fetcher.search_vns_by_title_sync(
+                    title=title,
+                    max_results=max_results,
+                    min_votes=min_votes
+                )
+        except:
+            pass
+        return []
 
 def main():
     # Ensure session state is initialized (defensive programming)
@@ -164,10 +185,10 @@ def main():
     # Filtering options
     st.sidebar.subheader("🔍 Filtering Options")
     strict_filtering = st.sidebar.toggle("Strict SFW Filtering", value=True, help="More restrictive content filtering")
-    min_rating = st.sidebar.slider("Minimum Rating", 0, 100, 70, 5, help="Minimum VNDB rating (0-100)")
-    min_votes = st.sidebar.slider("Minimum Votes", 10, 2000, 100, 10, help="Minimum number of user votes")
-    max_id = st.sidebar.slider("Search Range (Max ID)", 100, 5000, 1500, 100, help="Higher = more VNs but slower")
-    max_attempts = st.sidebar.slider("Max Attempts", 10, 300, 50, 10, help="How hard to try finding a VN")
+    min_rating = st.sidebar.slider("Minimum Rating", 0, 100, 60, 5, help="Minimum VNDB rating (0-100)")
+    min_votes = st.sidebar.slider("Minimum Votes", 10, 5000, 100, 10, help="Minimum number of user votes")
+    max_id = st.sidebar.slider("Search Range (Max ID)", 10, 10000, 1500, 100, help="Higher = more VNs but slower")
+    max_attempts = st.sidebar.slider("Max Attempts", 10, 1000, 50, 10, help="How hard to try finding a VN")
     
     # Main tabs
     tab1, tab2, tab3, tab4 = st.tabs(["🎲 Random VN", "🔢 Multiple VNs", "🔍 Search", "📊 Statistics"])
@@ -239,35 +260,143 @@ def main():
     with tab3:
         st.header("🔍 Search VNs by Title")
         st.write("Search for specific visual novels by title!")
-        
+    
+        # Add debug mode toggle
+        debug_mode = st.toggle("🐛 Debug Mode", value=False, help="Show detailed debugging information")
+    
         col1, col2 = st.columns([2, 1])
         with col1:
-            search_query = st.text_input("Enter VN title to search", placeholder="e.g., Steins Gate")
-        
+            search_query = st.text_input("Enter VN title to search", placeholder="e.g., Steins;Gate, Clannad, Fate")
+    
         with col2:
             max_results = st.number_input("Max Results", 1, 20, 10)
-        
+    
+        # Quick search suggestions
+        st.write("**Popular titles to try:** Steins;Gate, Clannad, Fate/stay night, Phoenix Wright, Danganronpa")
+    
         if st.button("🔍 Search VNs", type="primary"):
             if search_query:
                 with st.spinner(f"🔍 Searching for '{search_query}'..."):
                     try:
-                        results = asyncio.run(search_vns_async(search_query, max_results, min_votes))
-                        st.session_state.search_results = results
-                        if results:
-                            st.success(f"✅ Found {len(results)} VNs!")
+                        # Check if the enhanced search method exists
+                        if hasattr(st.session_state.fetcher, 'search_vns_by_title'):
+                            # Try the enhanced method first (with debug info)
+                            try:
+                                results, debug_info = asyncio.run(
+                                    st.session_state.fetcher.search_vns_by_title(
+                                        search_query, max_results, min_votes, debug=debug_mode
+                                    )
+                                )
+                            except TypeError:
+                                # Fall back to simple method if enhanced version not available
+                                results = asyncio.run(
+                                    st.session_state.fetcher.search_vns_by_title_simple(
+                                        search_query, max_results, min_votes
+                                    )
+                                )
+                                debug_info = {'method': 'fallback_simple'}
                         else:
-                            st.warning("⚠️ No VNs found matching your search.")
+                            st.error("❌ Search method not found in fetcher class")
+                            st.stop()
+                    
+                        # Display debug information if enabled
+                        if debug_mode and 'debug_info' in locals():
+                            with st.expander("🐛 Debug Information", expanded=False):
+                                st.json(debug_info)
+                    
+                        # Store and display results
+                        st.session_state.search_results = results
+                    
+                        if results:
+                            st.success(f"✅ Found {len(results)} SFW VNs!")
+                        
+                            # Show summary stats
+                            if debug_mode and 'debug_info' in locals():
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Total Found", debug_info.get('total_found', 'N/A'))
+                                with col2:
+                                    st.metric("SFW Results", debug_info.get('safe_found', len(results)))
+                                with col3:
+                                    st.metric("Filtered Out", debug_info.get('filtered_out', 'N/A'))
+                        else:
+                            st.warning("⚠️ No SFW VNs found matching your search.")
+                            if debug_mode and 'debug_info' in locals():
+                                st.write("**Debug Info:**")
+                            if debug_info.get('error'):
+                                st.error(f"Error: {debug_info['error']}")
+                            if debug_info.get('total_found', 0) > 0:
+                                st.info(f"Found {debug_info['total_found']} total results, but all were filtered out as NSFW")
+                        
+                            # Suggest alternative searches
+                            st.write("**Try these suggestions:**")
+                            st.write("• Use simpler search terms (e.g., 'Steins' instead of 'Steins;Gate')")
+                            st.write("• Try different spelling variations")
+                            st.write("• Lower the minimum votes in settings")
+                            st.write("• Enable debug mode to see what's happening")
+                
                     except Exception as e:
                         st.error(f"❌ Search error: {str(e)}")
+                        if debug_mode:
+                            st.exception(e)
             else:
                 st.warning("⚠️ Please enter a search term.")
-        
+    
+        # Test connectivity button
+        if st.button("🔌 Test API Connection"):
+            with st.spinner("Testing VNDB API connection..."):
+                try:
+                    import httpx
+                    async def test_connection():
+                        async with httpx.AsyncClient(timeout=10.0) as client:
+                            # Simple test query
+                            payload = {
+                                "filters": ["id", "=", "v1"],
+                                "fields": "id, title",
+                                "results": 1
+                            }
+                            response = await client.post(st.session_state.fetcher.api_url, json=payload)
+                            return response.status_code, response.text[:200]
+                
+                    status_code, response_text = asyncio.run(test_connection())
+                
+                    if status_code == 200:
+                        st.success(f"✅ API connection successful! (Status: {status_code})")
+                    else:
+                        st.error(f"❌ API connection failed. Status: {status_code}")
+                        if debug_mode:
+                            st.write(f"Response: {response_text}")
+                        
+                except Exception as e:
+                    st.error(f"❌ Connection test failed: {str(e)}")
+    
         # Display search results
         if st.session_state.search_results:
             st.subheader(f"🔍 Search Results ({len(st.session_state.search_results)})")
             for i, vn in enumerate(st.session_state.search_results):
                 st.write(f"### Result #{i + 1}")
                 display_vn_card(vn)
+    
+        # Help section
+        with st.expander("❓ Search Help & Tips"):
+            st.write("""
+            **Search Tips:**
+            - Use partial titles (e.g., "Steins" for "Steins;Gate")
+            - Try different spellings or romanizations
+            - Popular VNs usually have more votes and better search results
+            - Enable debug mode to see detailed search information
+        
+            **Common Issues:**
+            - Some titles use special characters (;, :, !) that might affect search
+            - Very new or obscure VNs might not be found
+            - NSFW content is automatically filtered out
+        
+            **What to try if search isn't working:**
+            1. Test API connection using the button above  
+            2. Enable debug mode to see what's happening
+            3. Try simpler search terms
+            4. Check if the title exists on vndb.org first
+            """)
     
     with tab4:
         st.header("📊 Statistics & Data Export")
@@ -331,7 +460,7 @@ def main():
     
     # Footer
     st.markdown("---")
-    st.markdown("**🎮 VNDB SFW Fetcher** | Data from [VNDB.org](https://vndb.org) | Safe content filtering applied")
+    st.markdown("**🎮 VNDB SFW Fetcher** | Data from [VNDB.org](https://vndb.org) | Safe content filtering applied (except Gore)")
 
 if __name__ == "__main__":
     main()

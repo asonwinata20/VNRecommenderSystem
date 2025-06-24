@@ -155,34 +155,111 @@ class VNDBFetcher:
         
         return results
 
-    async def search_vns_by_title(self, title: str, max_results: int = 10, min_votes: int = 50) -> List[Dict[str, Any]]:
-        """Search VNs by title"""
+    async def search_vns_by_title(self, title: str, max_results: int = 10, min_votes: int = 50, debug: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Search VNs by title with enhanced debugging
+        Returns: (results_list, debug_info)
+        """
+        debug_info = {
+            'query': title,
+            'max_results': max_results,
+            'min_votes': min_votes,
+            'api_url': self.api_url,
+            'status_code': None,
+            'response_text': None,
+            'error': None,
+            'payload': None,
+            'total_found': 0,
+            'safe_found': 0,
+            'filtered_out': 0
+        }
+        
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                payload = {
-                    "filters": ["and",
-                        ["title", "~", title],
-                        ["lang", "=", "en"],
-                        ["votecount", ">=", min_votes]
-                    ],
-                    "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
-                    "results": max_results,
-                    "sort": "rating",
-                    "reverse": True
-                }
-
-                response = await client.post(self.api_url, json=payload)
+                # Try multiple search strategies
+                search_strategies = [
+                    # Strategy 1: Exact title match with fuzzy search
+                    {
+                        "filters": ["and",
+                            ["title", "~", title],
+                            ["lang", "=", "en"],
+                            ["votecount", ">=", min_votes]
+                        ],
+                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
+                        "results": max_results,
+                        "sort": "rating",
+                        "reverse": True
+                    },
+                    # Strategy 2: More lenient search if first fails
+                    {
+                        "filters": ["and",
+                            ["title", "~", title],
+                            ["lang", "=", "en"]
+                        ],
+                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
+                        "results": max_results,
+                        "sort": "votecount",
+                        "reverse": True
+                    },
+                    # Strategy 3: Even more lenient - remove language filter
+                    {
+                        "filters": ["title", "~", title],
+                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
+                        "results": max_results,
+                        "sort": "rating",
+                        "reverse": True
+                    }
+                ]
                 
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("results"):
-                        results = []
-                        for vn in data["results"]:
-                            is_safe, _ = self.is_content_safe(vn, strict=False)
-                            if is_safe:
-                                results.append(self.format_vn_info(vn))
-                        return results
+                for i, payload in enumerate(search_strategies):
+                    debug_info['payload'] = payload
+                    debug_info['strategy'] = i + 1
+                    
+                    response = await client.post(self.api_url, json=payload)
+                    debug_info['status_code'] = response.status_code
+                    
+                    if debug:
+                        debug_info['response_text'] = response.text[:500]  # First 500 chars
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        debug_info['raw_response'] = data if debug else None
+                        
+                        if data.get("results"):
+                            debug_info['total_found'] = len(data["results"])
+                            results = []
+                            
+                            for vn in data["results"]:
+                                is_safe, reason = self.is_content_safe(vn, strict=False)
+                                if is_safe:
+                                    results.append(self.format_vn_info(vn))
+                                    debug_info['safe_found'] += 1
+                                else:
+                                    debug_info['filtered_out'] += 1
+                                    if debug:
+                                        debug_info.setdefault('filtered_reasons', []).append(reason)
+                            
+                            if results:  # If we found results, return them
+                                return results, debug_info
+                        else:
+                            debug_info['message'] = f"Strategy {i+1}: No results found"
+                    
+                    elif response.status_code == 429:
+                        debug_info['error'] = "Rate limited"
+                        await asyncio.sleep(1)
+                    else:
+                        debug_info['error'] = f"HTTP {response.status_code}: {response.text}"
+                
+                # If no strategy worked
+                debug_info['final_message'] = "All search strategies failed"
+                return [], debug_info
+                        
             except Exception as e:
-                print(f"Search error: {e}")
-                
-        return []
+                debug_info['error'] = f"Exception: {str(e)}"
+                return [], debug_info
+
+    # Legacy method for backward compatibility (no debug info)
+    async def search_vns_by_title_simple(self, title: str, max_results: int = 10, min_votes: int = 50) -> List[Dict[str, Any]]:
+        """Simple search method for backward compatibility"""
+        results, _ = await self.search_vns_by_title(title, max_results, min_votes, debug=False)
+        return results
