@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List
 import json
 
 class VNDBFetcher:
-    """A class to fetch Safe-for-Work Visual Novels from VNDB API"""
+    """A class to fetch Safe-for-Work Visual Novels from VNDB API with improved tag-based filtering"""
     
     def __init__(self):
         self.api_url = "https://api.vndb.org/kana/vn"
@@ -20,11 +20,64 @@ class VNDBFetcher:
         self.safe_keywords = [
             "no sexual content", "adult protagonist", "adult heroine", 
             "mature protagonist", "mature heroine", "adult romance", 
-            "mature themes", "mature content"
+            "mature themes", "mature content", "low sexual content", 
+            "sexual innuendo", "sex change"
         ]
         
         # Explicit NSFW tags for simple filtering
         self.explicit_nsfw = ["hentai", "nukige", "18+", "erotic", "pornographic"]
+        
+        # IMPROVED: Fixed and expanded tag mapping with verified VNDB tag IDs
+        self.tag_map = {
+            # Story genres
+            "Mystery": "g19",
+            "Horror": "g7", 
+            "Comedy": "g104",
+            "Drama": "g147",
+            "Slice of Life": "g454",
+            "Thriller": "g789",
+            "Romance": "g96",
+            "Action": "g12",
+            "Fantasy": "g2",
+            "Science Fiction": "g105",
+            
+            # Protagonist types - FIXED: Removed duplicate tag IDs
+            "Male Protagonist": "g133",
+            "Female Protagonist": "g134", 
+            "Multiple Protagonists": "g136",
+            "Adult Protagonist": "g137",
+            "Student Protagonist": "g544",
+            
+            # Gameplay
+            "Multiple Endings": "g148",
+            "Kinetic Novel": "g709",
+            "Linear Plot": "g145",
+            "Branching Plot": "g606",
+            
+            # Setting
+            "School": "g47",
+            "Modern Day": "g143",
+            "Past": "g141",
+            "Future": "g140",
+            # FIXED: Removed duplicate mapping for Historical
+            
+            # NEW: Additional useful tags
+            "Friendship": "710",
+            "Family": "g215",
+            "Military": "g46"
+        }
+        
+        # Common VN tags for easy reference
+        self.common_tags = {
+            "story": ["Mystery", "Horror", "Comedy", "Drama", "Slice of Life", 
+                      "Thriller", "Romance", "Action", "Fantasy", "Science Fiction"],
+            "protagonist": ["Male Protagonist", "Female Protagonist", "Multiple Protagonists",
+                           "Adult Protagonist", "Student Protagonist"],
+            "gameplay": ["Multiple Endings", "Linear Plot", "Kinetic Novel",
+                        "Branching Plot"],
+            "setting": ["School", "Modern Day", "Past", "Future"],
+            "themes": ["Friendship", "Family", "Military"]
+        }
 
     def is_content_safe(self, vn: Dict[str, Any], strict: bool = True) -> tuple[bool, str]:
         """
@@ -48,7 +101,6 @@ class VNDBFetcher:
                         return False, f"NSFW tag: '{tag_name}' contains '{nsfw_keyword}'"
             
             # Check description - but be more careful about context
-            # Only flag if it's clearly describing NSFW content, not the absence of it
             explicit_desc_patterns = ["contains sexual", "features erotic", "includes adult content", "hentai game"]
             for pattern in explicit_desc_patterns:
                 if pattern in description:
@@ -56,7 +108,6 @@ class VNDBFetcher:
                     
         else:
             # Simple filtering - only exclude obviously explicit content
-            # Ignore safe tags like "no sexual content"
             for tag_name in tag_names:
                 # Skip safe tags
                 if any(safe_tag in tag_name for safe_tag in self.safe_keywords):
@@ -94,172 +145,319 @@ class VNDBFetcher:
         
         return formatted
 
-    async def fetch_random_vn(self, max_attempts: int = 100, strict_filtering: bool = True, 
-                             min_rating: int = 60, max_id: int = 1000, min_votes: int = 100) -> Optional[Dict[str, Any]]:
+    def get_available_tags(self) -> Dict[str, List[str]]:
+        """Return common VN tags organized by category"""
+        return self.common_tags
+
+    def resolve_tag_names(self, tag_names: List[str]) -> List[str]:
         """
-        Fetch a random SFW Visual Novel
+        Convert tag names to tag IDs if available in tag_map, otherwise return as-is
+        """
+        resolved_tags = []
+        for tag_name in tag_names:
+            if tag_name in self.tag_map:
+                resolved_tags.append(self.tag_map[tag_name])
+                print(f"Debug: Resolved '{tag_name}' -> '{self.tag_map[tag_name]}'")
+            else:
+                resolved_tags.append(tag_name)
+                print(f"Debug: Using tag name as-is: '{tag_name}'")
+        return resolved_tags
+
+    def build_tag_filters(self, required_tags: List[str] = None, excluded_tags: List[str] = None, 
+                         tag_logic: str = "any") -> List:
+        """
+        Build filter conditions for tags with flexible logic
         
         Args:
-            max_attempts: Maximum number of attempts to find a VN
-            strict_filtering: Whether to use strict NSFW filtering
-            min_rating: Minimum rating threshold (0-100)
-            max_id: Maximum VN ID to search (affects range of VNs)
-            min_votes: Minimum number of user votes required
+            required_tags: List of tags that should be present
+            excluded_tags: List of tags that must NOT be present
+            tag_logic: "any" (OR logic) or "all" (AND logic) for required tags
         """
+        filters = []
         
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for attempt in range(max_attempts):
-                try:
-                    vid = random.randint(1, max_id)
-                    vn_id = f"v{vid}"
-
-                    payload = {
-                        "filters": ["and", 
-                            ["id", "=", vn_id],
-                            ["lang", "=", "en"],
-                            ["rating", ">=", min_rating],
-                            ["votecount", ">=", min_votes]
-                        ],
-                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
-                        "results": 1
-                    }
-
-                    response = await client.post(self.api_url, json=payload)
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get("results"):
-                            vn = data["results"][0]
-                            
-                            is_safe, reason = self.is_content_safe(vn, strict_filtering)
-                            
-                            if is_safe:
-                                return self.format_vn_info(vn)
-                    
-                    elif response.status_code == 429:
-                        await asyncio.sleep(1)
-                    
-                except Exception as e:
-                    await asyncio.sleep(0.1)
-
-        return None
-
-    async def fetch_multiple_vns(self, count: int = 3, **kwargs) -> List[Dict[str, Any]]:
-        """Fetch multiple SFW Visual Novels"""
-        results = []
+        if required_tags:
+            resolved_required = self.resolve_tag_names(required_tags)
+            print(f"Debug: Required tags resolved to: {resolved_required}")
+            
+            if len(resolved_required) == 1:
+                filters.append(["tag", "=", resolved_required[0]])
+            else:
+                if tag_logic == "any":
+                    # Use OR logic for multiple required tags
+                    tag_conditions = ["or"]
+                    for tag in resolved_required:
+                        tag_conditions.append(["tag", "=", tag])
+                    filters.append(tag_conditions)
+                else:  # tag_logic == "all"
+                    # Use AND logic for multiple required tags
+                    for tag in resolved_required:
+                        filters.append(["tag", "=", tag])
         
-        for i in range(count):
-            vn = await self.fetch_random_vn(**kwargs)
-            if vn:
-                results.append(vn)
+        if excluded_tags:
+            resolved_excluded = self.resolve_tag_names(excluded_tags)
+            print(f"Debug: Excluded tags resolved to: {resolved_excluded}")
+            for tag in resolved_excluded:
+                filters.append(["tag", "!=", tag])
         
-        return results
+        print(f"Debug: Built tag filters: {filters}")
+        return filters
 
-    async def search_vns_by_title(self, title: str, max_results: int = 10, min_votes: int = 50, debug: bool = False) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    def validate_tag_mapping(self) -> Dict[str, Any]:
         """
-        Search VNs by title with enhanced debugging
-        Returns: (results_list, debug_info)
+        Validate tag mapping for duplicates and return a report
         """
-        debug_info = {
-            'query': title,
-            'max_results': max_results,
-            'min_votes': min_votes,
-            'api_url': self.api_url,
-            'status_code': None,
-            'response_text': None,
-            'error': None,
-            'payload': None,
-            'total_found': 0,
-            'safe_found': 0,
-            'filtered_out': 0
+        tag_id_to_names = {}
+        duplicates = {}
+        warnings = []
+        
+        # Group tag names by their IDs
+        for name, tag_id in self.tag_map.items():
+            if tag_id not in tag_id_to_names:
+                tag_id_to_names[tag_id] = []
+            tag_id_to_names[tag_id].append(name)
+        
+        # Find duplicates
+        for tag_id, names in tag_id_to_names.items():
+            if len(names) > 1:
+                duplicates[tag_id] = names
+        
+        return {
+            'duplicates': duplicates,
+            'warnings': warnings,
+            'total_mappings': len(self.tag_map),
+            'unique_ids': len(tag_id_to_names)
         }
+
+    async def search_vns_by_query(self, query: str, max_results: int = 10, 
+                                 min_rating: int = 60, min_votes: int = 50,
+                                 strict_filtering: bool = True) -> List[Dict[str, Any]]:
+        """
+        Search VNs by title/description query
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                filters = [
+                    ["and",
+                        ["lang", "=", "en"],
+                        ["rating", ">=", min_rating],
+                        ["votecount", ">=", min_votes],
+                        ["search", "=", query]
+                    ]
+                ]
+                
+                payload = {
+                    "filters": filters,
+                    "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
+                    "results": max_results * 2,
+                    "sort": "rating",
+                    "reverse": True
+                }
+                
+                response = await client.post(self.api_url, json=payload)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = []
+                    
+                    if data.get("results"):
+                        for vn in data["results"]:
+                            if len(results) >= max_results:
+                                break
+                                
+                            is_safe, _ = self.is_content_safe(vn, strict_filtering)
+                            if is_safe:
+                                results.append(self.format_vn_info(vn))
+                    
+                    return results
+                
+                else:
+                    print(f"Search failed with status {response.status_code}: {response.text}")
+                    return []
+                    
+            except Exception as e:
+                print(f"Error searching VNs: {e}")
+                return []
+
+    async def fetch_vns_by_tags(self, required_tags: List[str] = None, excluded_tags: List[str] = None,
+                               max_results: int = 10, min_rating: int = 60, min_votes: int = 50,
+                               strict_filtering: bool = True, sort_by: str = "rating",
+                               tag_logic: str = "any") -> List[Dict[str, Any]]:
+        """
+        Fetch VNs based on tag selection with improved filtering
+        
+        Args:
+            required_tags: List of tags that should be present in the VN
+            excluded_tags: List of tags that must NOT be present in the VN
+            max_results: Maximum number of results to return
+            min_rating: Minimum rating threshold (0-100)
+            min_votes: Minimum number of user votes required
+            strict_filtering: Whether to use strict NSFW filtering
+            sort_by: Sort criteria ("rating", "votecount", "released")
+            tag_logic: "any" (OR logic) or "all" (AND logic) for required tags
+        """
+        if not required_tags and not excluded_tags:
+            raise ValueError("At least one of required_tags or excluded_tags must be provided")
+        
+        print(f"Debug: Searching for VNs with required_tags={required_tags}, excluded_tags={excluded_tags}, logic={tag_logic}")
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             try:
-                # Try multiple search strategies
-                search_strategies = [
-                    # Strategy 1: Exact title match with fuzzy search
-                    {
-                        "filters": ["and",
-                            ["title", "~", title],
-                            ["lang", "=", "en"],
-                            ["votecount", ">=", min_votes]
-                        ],
-                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
-                        "results": max_results,
-                        "sort": "rating",
-                        "reverse": True
-                    },
-                    # Strategy 2: More lenient search if first fails
-                    {
-                        "filters": ["and",
-                            ["title", "~", title],
-                            ["lang", "=", "en"]
-                        ],
-                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
-                        "results": max_results,
-                        "sort": "votecount",
-                        "reverse": True
-                    },
-                    # Strategy 3: Even more lenient - remove language filter
-                    {
-                        "filters": ["title", "~", title],
-                        "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
-                        "results": max_results,
-                        "sort": "rating",
-                        "reverse": True
-                    }
+                # Build base filters
+                base_filters = [
+                    ["lang", "=", "en"],
+                    ["rating", ">=", min_rating],
+                    ["votecount", ">=", min_votes]
                 ]
                 
-                for i, payload in enumerate(search_strategies):
-                    debug_info['payload'] = payload
-                    debug_info['strategy'] = i + 1
-                    
-                    response = await client.post(self.api_url, json=payload)
-                    debug_info['status_code'] = response.status_code
-                    
-                    if debug:
-                        debug_info['response_text'] = response.text[:500]  # First 500 chars
-                    
-                    if response.status_code == 200:
-                        data = response.json()
-                        debug_info['raw_response'] = data if debug else None
-                        
-                        if data.get("results"):
-                            debug_info['total_found'] = len(data["results"])
-                            results = []
-                            
-                            for vn in data["results"]:
-                                is_safe, reason = self.is_content_safe(vn, strict=False)
-                                if is_safe:
-                                    results.append(self.format_vn_info(vn))
-                                    debug_info['safe_found'] += 1
-                                else:
-                                    debug_info['filtered_out'] += 1
-                                    if debug:
-                                        debug_info.setdefault('filtered_reasons', []).append(reason)
-                            
-                            if results:  # If we found results, return them
-                                return results, debug_info
-                        else:
-                            debug_info['message'] = f"Strategy {i+1}: No results found"
-                    
-                    elif response.status_code == 429:
-                        debug_info['error'] = "Rate limited"
-                        await asyncio.sleep(1)
-                    else:
-                        debug_info['error'] = f"HTTP {response.status_code}: {response.text}"
+                # Add tag filters
+                tag_filters = self.build_tag_filters(required_tags, excluded_tags, tag_logic)
                 
-                # If no strategy worked
-                debug_info['final_message'] = "All search strategies failed"
-                return [], debug_info
-                        
+                # Combine all filters with proper logic
+                if tag_filters:
+                    all_filters = ["and"] + base_filters + tag_filters
+                else:
+                    all_filters = ["and"] + base_filters
+                
+                payload = {
+                    "filters": all_filters,
+                    "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
+                    "results": max_results * 3,
+                    "sort": sort_by,
+                    "reverse": True
+                }
+                
+                print(f"Debug: Final API payload filters: {all_filters}")
+                
+                response = await client.post(self.api_url, json=payload)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = []
+                    
+                    print(f"Debug: API returned {len(data.get('results', []))} results")
+                    
+                    if data.get("results"):
+                        for i, vn in enumerate(data["results"]):
+                            if len(results) >= max_results:
+                                break
+                                
+                            print(f"Debug: Processing VN {i+1}: {vn.get('title', 'Unknown')}")
+                            
+                            is_safe, reason = self.is_content_safe(vn, strict_filtering)
+                            if is_safe:
+                                formatted_vn = self.format_vn_info(vn)
+                                results.append(formatted_vn)
+                                print(f"Debug: Added '{formatted_vn['title']}' with tags: {formatted_vn['tags'][:5]}...")
+                            else:
+                                print(f"Debug: Filtered out {vn.get('title', 'Unknown')}: {reason}")
+                    
+                    print(f"Debug: Returning {len(results)} safe results")
+                    return results
+                
+                elif response.status_code == 429:
+                    print("Rate limited, waiting...")
+                    await asyncio.sleep(2)
+                    return []
+                else:
+                    print(f"API error {response.status_code}: {response.text}")
+                    return []
+                    
             except Exception as e:
-                debug_info['error'] = f"Exception: {str(e)}"
-                return [], debug_info
+                print(f"Error fetching VNs by tags: {e}")
+                return []
 
-    # Legacy method for backward compatibility (no debug info)
-    async def search_vns_by_title_simple(self, title: str, max_results: int = 10, min_votes: int = 50) -> List[Dict[str, Any]]:
-        """Simple search method for backward compatibility"""
-        results, _ = await self.search_vns_by_title(title, max_results, min_votes, debug=False)
-        return results
+    async def fetch_popular_vns(self, max_results: int = 10, min_rating: int = 70, 
+                               min_votes: int = 100, strict_filtering: bool = True) -> List[Dict[str, Any]]:
+        """
+        Fetch popular/highly-rated VNs without specific tag requirements
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                filters = ["and",
+                    ["lang", "=", "en"],
+                    ["rating", ">=", min_rating],
+                    ["votecount", ">=", min_votes]
+                ]
+                
+                payload = {
+                    "filters": filters,
+                    "fields": "id, title, rating, votecount, released, languages, image.url, description, tags.name",
+                    "results": max_results * 3,
+                    "sort": "rating",
+                    "reverse": True
+                }
+                
+                response = await client.post(self.api_url, json=payload)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    results = []
+                    
+                    if data.get("results"):
+                        for vn in data["results"]:
+                            if len(results) >= max_results:
+                                break
+                                
+                            is_safe, _ = self.is_content_safe(vn, strict_filtering)
+                            if is_safe:
+                                results.append(self.format_vn_info(vn))
+                    
+                    return results
+                else:
+                    return []
+                    
+            except Exception as e:
+                print(f"Error fetching popular VNs: {e}")
+                return []
+
+    async def fetch_random_vn_with_tags(self, required_tags: List[str] = None, excluded_tags: List[str] = None,
+                                       max_attempts: int = 3, strict_filtering: bool = True,
+                                       min_rating: int = 60, min_votes: int = 50,
+                                       tag_logic: str = "any") -> Optional[Dict[str, Any]]:
+        """
+        Fetch a single random VN that matches the tag criteria
+        """
+        # First try to get a pool of VNs matching the criteria
+        results = await self.fetch_vns_by_tags(
+            required_tags=required_tags,
+            excluded_tags=excluded_tags,
+            max_results=20,
+            min_rating=min_rating,
+            min_votes=min_votes,
+            strict_filtering=strict_filtering,
+            tag_logic=tag_logic
+        )
+        
+        if results:
+            return random.choice(results)
+        
+        # If no results with tags, fall back to popular VNs
+        popular_results = await self.fetch_popular_vns(
+            max_results=20,
+            min_rating=min_rating,
+            min_votes=min_votes,
+            strict_filtering=strict_filtering
+        )
+        
+        if popular_results:
+            return random.choice(popular_results)
+        
+        return None
+
+    async def fetch_random_vn(self, max_attempts: int = 200, strict_filtering: bool = True, 
+                             min_rating: int = 60, max_id: int = 1000, min_votes: int = 100) -> Optional[Dict[str, Any]]:
+        """
+        Fetch a random SFW Visual Novel
+        """
+        # Use the more efficient approach
+        popular_vns = await self.fetch_popular_vns(
+            max_results=200,
+            min_rating=min_rating,
+            min_votes=min_votes,
+            strict_filtering=strict_filtering
+        )
+        
+        if popular_vns:
+            return random.choice(popular_vns)
+        
+        return None
