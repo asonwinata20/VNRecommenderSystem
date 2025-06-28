@@ -291,7 +291,7 @@ def main():
         
         # Header
         st.title("🎮 Visual Novel Recommendation System")
-        st.markdown("Discover Visual Novel using random or tag-based fetching from the VNDB database!")
+        st.markdown("Discover Visual Novel using tag-based fetching from the VNDB database!")
         
         # Sidebar for settings
         st.sidebar.header("⚙️ Settings")
